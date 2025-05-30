@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>傘忘れ防止リマインダー</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans JP', 'Inter', sans-serif; /* Primarily Japanese font, fallback to Inter */
+            -webkit-tap-highlight-color: transparent; /* Disable tap highlight on mobile */
+        }
+        /* Custom styles for better visual feedback on touch */
+        button:active {
+            transform: scale(0.98);
+        }
+        /* Ensure consistent font rendering for inputs */
+        input[type="time"] {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+    <div id="app-container" class="container mx-auto p-4 sm:p-6 max-w-lg bg-white rounded-xl shadow-2xl">
+        <header class="text-center mb-6 sm:mb-8">
+            <h1 class="text-3xl sm:text-4xl font-bold text-blue-600">傘忘れ防止リマインダー</h1>
+            <p class="text-gray-500 mt-1">大切な傘を忘れないために</p>
+        </header>
+
+        <div id="status-area" class="mb-6 sm:mb-8 p-4 sm:p-5 bg-blue-50 rounded-lg shadow">
+            <p id="status-text" class="text-lg sm:text-xl text-blue-700 font-semibold">リマインダーはセットされていません。</p>
+            <p id="reminder-time-text" class="text-sm sm:text-base text-gray-600 mt-1"></p>
+        </div>
+
+        <div id="controls-area" class="space-y-4 sm:space-y-5">
+            <div class="flex flex-col items-start space-y-2">
+                <label for="return-time" class="text-lg text-gray-700 font-medium">帰宅予定時刻：</label>
+                <input type="time" id="return-time" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition duration-150 text-lg">
+            </div>
+            <button id="set-reminder-btn" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg transition duration-150 text-lg shadow-md hover:shadow-lg">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-2" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clip-rule="evenodd" />
+                </svg>
+                リマインダーをセット
+            </button>
+            <button id="cancel-reminder-btn" class="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-4 rounded-lg transition duration-150 text-lg shadow-md hover:shadow-lg hidden">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-2" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 000 2h6a1 1 0 100-2H7z" clip-rule="evenodd" />
+                </svg>
+                リマインダーを解除
+            </button>
+        </div>
+
+        <div id="alarm-modal" class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-4 hidden z-50 transition-opacity duration-300 opacity-0">
+            <div class="bg-white p-6 sm:p-8 rounded-xl shadow-xl text-center max-w-md w-full transform scale-95 transition-transform duration-300">
+                <h2 class="text-3xl sm:text-4xl font-bold text-red-600 mb-3">アラーム！</h2>
+                <div class="text-6xl sm:text-7xl my-4 sm:my-6" role="img" aria-label="傘のアイコン">☂️</div>
+                <p id="alarm-text" class="text-lg sm:text-xl text-gray-800 mb-6 sm:mb-8">傘を忘れていませんか？<br>玄関先などを確認してください！</p>
+                <button id="dismiss-alarm-btn" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 sm:py-4 px-4 rounded-lg transition duration-150 text-lg shadow-md hover:shadow-lg">
+                    確認しました
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const statusText = document.getElementById('status-text');
+            const reminderTimeText = document.getElementById('reminder-time-text');
+            const returnTimeInput = document.getElementById('return-time');
+            const setReminderBtn = document.getElementById('set-reminder-btn');
+            const cancelReminderBtn = document.getElementById('cancel-reminder-btn');
+            const alarmModal = document.getElementById('alarm-modal');
+            const dismissAlarmBtn = document.getElementById('dismiss-alarm-btn');
+
+            const localStorageKey = 'umbrellaReminder';
+            let reminderData = {
+                isActive: false,
+                alarmTime: null, // ISO string for full date and time
+                returnTimeInput: null // HH:MM string
+            };
+
+            let synth; // Tone.js synth
+            let alarmSoundLoop;
+            let alarmCheckIntervalId = null;
+
+            // Initialize Tone.js synth
+            // This needs to be created after a user interaction or it might be blocked by browser policy.
+            // We will try to initialize it when setting a reminder.
+            function initializeAudio() {
+                if (!synth && window.Tone) {
+                    synth = new Tone.Synth().toDestination();
+                }
+            }
+            
+            async function ensureAudioContextResumed() {
+                if (window.Tone && Tone.context.state === 'suspended') {
+                    try {
+                        await Tone.start();
+                        console.log("AudioContext resumed successfully.");
+                    } catch (e) {
+                        console.error("Failed to resume AudioContext:", e);
+                    }
+                }
+                initializeAudio(); // Ensure synth is created
+            }
+
+
+            function updateUI() {
+                if (reminderData.isActive && reminderData.alarmTime) {
+                    statusText.textContent = 'リマインダー作動中';
+                    statusText.classList.remove('text-blue-700');
+                    statusText.classList.add('text-green-700');
+                    
+                    const alarmDate = new Date(reminderData.alarmTime);
+                    const timeOptions = { hour: '2-digit', minute: '2-digit', hour12: false };
+                    reminderTimeText.textContent = `通知予定: ${alarmDate.toLocaleDateString('ja-JP')} ${alarmDate.toLocaleTimeString('ja-JP', timeOptions)}`;
+                    
+                    setReminderBtn.textContent = 'リマインダーを更新';
+                    cancelReminderBtn.classList.remove('hidden');
+                    if (reminderData.returnTimeInput) {
+                        returnTimeInput.value = reminderData.returnTimeInput;
+                    }
+                } else {
+                    statusText.textContent = 'リマインダーはセットされていません。';
+                    statusText.classList.remove('text-green-700');
+                    statusText.classList.add('text-blue-700');
+                    reminderTimeText.textContent = '';
+                    setReminderBtn.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-2" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clip-rule="evenodd" />
+                        </svg>
+                        リマインダーをセット`;
+                    cancelReminderBtn.classList.add('hidden');
+                    // returnTimeInput.value = ''; // Optionally clear time input
+                }
+            }
+
+            function saveReminder() {
+                localStorage.setItem(localStorageKey, JSON.stringify(reminderData));
+            }
+
+            function loadReminder() {
+                const storedData = localStorage.getItem(localStorageKey);
+                if (storedData) {
+                    reminderData = JSON.parse(storedData);
+                    if (reminderData.isActive && reminderData.alarmTime) {
+                        // If loaded reminder is active and time has passed, trigger alarm
+                        // This requires audio context to be ready.
+                        // We will check alarm logic after potential audio context resume.
+                    }
+                }
+                updateUI();
+            }
+
+            async function handleSetReminder() {
+                await ensureAudioContextResumed(); // Crucial for audio to work
+
+                const timeValue = returnTimeInput.value;
+                if (!timeValue) {
+                    alert('帰宅予定時刻を入力してください。');
+                    return;
+                }
+
+                const [hours, minutes] = timeValue.split(':').map(Number);
+                const now = new Date();
+                let alarmDateTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0, 0);
+
+                // If the selected time is in the past for today, set it for tomorrow
+                if (alarmDateTime <= now) {
+                    alarmDateTime.setDate(alarmDateTime.getDate() + 1);
+                }
+
+                reminderData.isActive = true;
+                reminderData.alarmTime = alarmDateTime.toISOString();
+                reminderData.returnTimeInput = timeValue;
+
+                saveReminder();
+                updateUI();
+                startAlarmCheckInterval(); // Start checking for the alarm time
+                console.log(`Reminder set for: ${reminderData.alarmTime}`);
+            }
+
+            function handleCancelReminder() {
+                reminderData.isActive = false;
+                reminderData.alarmTime = null;
+                reminderData.returnTimeInput = null; // Clear stored input time as well
+
+                saveReminder();
+                updateUI();
+                stopAlarmCheckInterval();
+                stopAlarmSound(); // Ensure sound stops if it was playing
+                hideAlarmModal(); // Hide modal if it was shown
+                console.log("Reminder cancelled.");
+            }
+
+            function checkAlarmLogic() {
+                if (reminderData.isActive && reminderData.alarmTime) {
+                    const now = new Date();
+                    const alarmTime = new Date(reminderData.alarmTime);
+                    if (now >= alarmTime) {
+                        console.log("Alarm time reached!");
+                        triggerAlarm();
+                        // No need to stop interval here, alarm will be dismissed or reminder cancelled
+                    }
+                } else {
+                     // If reminder became inactive for any reason, stop checking
+                    stopAlarmCheckInterval();
+                }
+            }
+
+            function startAlarmCheckInterval() {
+                stopAlarmCheckInterval(); // Clear any existing interval
+                if (reminderData.isActive && reminderData.alarmTime) {
+                    // Check immediately in case the time is very soon or already passed
+                    checkAlarmLogic(); 
+                    // Then set interval for periodic checks
+                    alarmCheckIntervalId = setInterval(checkAlarmLogic, 5000); // Check every 5 seconds
+                    console.log("Alarm check interval started.");
+                }
+            }
+
+            function stopAlarmCheckInterval() {
+                if (alarmCheckIntervalId) {
+                    clearInterval(alarmCheckIntervalId);
+                    alarmCheckIntervalId = null;
+                    console.log("Alarm check interval stopped.");
+                }
+            }
+            
+            async function triggerAlarm() {
+                if (alarmModal.classList.contains('hidden')) { // Trigger only once
+                    await ensureAudioContextResumed(); // Ensure audio can play
+                    
+                    alarmModal.classList.remove('hidden');
+                    setTimeout(() => { // For transition effect
+                        alarmModal.classList.remove('opacity-0');
+                        alarmModal.querySelector('div').classList.remove('scale-95');
+                    }, 10);
+                    
+                    playAlarmSound();
+                }
+            }
+
+            function hideAlarmModal() {
+                alarmModal.classList.add('opacity-0');
+                alarmModal.querySelector('div').classList.add('scale-95');
+                setTimeout(() => {
+                    alarmModal.classList.add('hidden');
+                }, 300); // Match transition duration
+            }
+
+            function dismissAlarm() {
+                hideAlarmModal();
+                stopAlarmSound();
+                // After dismissing, we effectively cancel the current reminder.
+                // User can set a new one if needed.
+                handleCancelReminder(); 
+                console.log("Alarm dismissed.");
+            }
+
+            function playAlarmSound() {
+                if (!synth) {
+                    console.warn("Synth not initialized. Cannot play sound.");
+                    return;
+                }
+                if (Tone.Transport.state !== "started") {
+                     Tone.Transport.start();
+                }
+                if (!alarmSoundLoop) {
+                    alarmSoundLoop = new Tone.Loop(time => {
+                        synth.triggerAttackRelease("C5", "8n", time); // A simple beep
+                    }, "1s").start(0); // Loop every 1 second
+                }
+                console.log("Alarm sound playing.");
+            }
+
+            function stopAlarmSound() {
+                if (alarmSoundLoop) {
+                    alarmSoundLoop.stop(0);
+                    alarmSoundLoop.dispose();
+                    alarmSoundLoop = null;
+                    console.log("Alarm sound stopped.");
+                }
+                // It's generally good to stop Tone.Transport if nothing else is scheduled.
+                // However, for simplicity, we might leave it, or manage it more carefully in a complex app.
+                // For now, stopping the loop is sufficient.
+                // if (Tone.Transport.state === "started") {
+                //    Tone.Transport.stop();
+                // }
+            }
+
+            // Event Listeners
+            setReminderBtn.addEventListener('click', handleSetReminder);
+            cancelReminderBtn.addEventListener('click', handleCancelReminder);
+            dismissAlarmBtn.addEventListener('click', dismissAlarm);
+
+            // Initial Load
+            loadReminder();
+            // If a reminder was active on load, start checking its alarm status.
+            // This needs to happen after potential audio context resume.
+            ensureAudioContextResumed().then(() => {
+                if (reminderData.isActive && reminderData.alarmTime) {
+                    startAlarmCheckInterval();
+                }
+            });
+            
+            // Set default time to 1 hour from now if input is empty
+            const now = new Date();
+            now.setHours(now.getHours() + 1);
+            const defaultHours = String(now.getHours()).padStart(2, '0');
+            const defaultMinutes = String(now.getMinutes()).padStart(2, '0');
+            if (!returnTimeInput.value) {
+                 returnTimeInput.value = `${defaultHours}:${defaultMinutes}`;
+            }
+        });
+    </script>
+</body>
+</html>
